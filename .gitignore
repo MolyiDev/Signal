@@ -1,0 +1,12 @@
+# Project place file
+/Signal.rbxlx
+
+# Roblox Studio lock files
+/*.rbxlx.lock
+/*.rbxl.lock
+
+sourcemap.json
+
+**/.pesde/
+**/luau_packages/
+**/lune_packages/

@@ -1,0 +1,289 @@
+--!native
+--!optimize 2
+
+export type Connection = {
+	Connected: boolean,
+	Disconnect: (self: Connection) -> (),
+	Reconnect: (self: Connection) -> (),
+}
+
+type PrivateConnection = Connection & {
+	Priority: number,
+	VarArgs: { any }?,
+	Signal: any,
+	Next: PrivateConnection?,
+	Previous: PrivateConnection?,
+	Callback: (...any) -> (),
+}
+
+export type Signal<T...> = {
+	Connect: <U...>(self: Signal<T...>, fn: (T...) -> (), U...) -> Connection,
+	ConnectPriority: <U...>(self: Signal<T...>, priority: number, fn: (T...) -> (), U...) -> Connection,
+	Once: <U...>(self: Signal<T...>, fn: (T...) -> (), U...) -> Connection,
+	OncePriority: <U...>(self: Signal<T...>, priority: number, fn: (T...) -> (), U...) -> Connection,
+	Wait: (self: Signal<T...>) -> T...,
+	WaitPriority: (self: Signal<T...>, priority: number) -> T...,
+	Fire: (self: Signal<T...>, T...) -> (),
+	DisconnectAll: (self: Signal<T...>) -> (),
+	Destroy: (self: Signal<T...>) -> (),
+}
+
+type PrivateSignal<T...> = Signal<T...> & {
+	Head: PrivateConnection?,
+	IsFiring: boolean,
+	IsProcessing: boolean,
+	FiringQueue: { { [number]: unknown } },
+	ProcessingQueue: { PrivateConnection },
+}
+
+local DEFAULT_PRIORITY = 0
+
+local table_clear = table.clear
+local table_unpack = table.unpack
+local coroutine_create = coroutine.create
+local coroutine_yield = coroutine.yield
+local coroutine_resume = coroutine.resume
+local coroutine_status = coroutine.status
+local coroutine_running = coroutine.running
+local task_spawn = task.spawn
+
+local SignalStatic = {}
+local Signal = {}
+Signal.__index = Signal
+
+function Signal:__tostring()
+	return "Signal"
+end
+
+local Connection = {}
+Connection.__index = Connection
+
+local function insertConnection<T...>(self: PrivateSignal<T...>, cn: PrivateConnection)
+	local head = self.Head
+	local priority = cn.Priority
+
+	if not head or priority >= head.Priority then
+		cn.Next = head
+		if head then head.Previous = cn end
+		self.Head = cn
+		cn.Previous = nil
+		return
+	end
+
+	local current = head
+	while current.Next and current.Next.Priority > priority do
+		current = current.Next
+	end
+
+	local nextNode = current.Next
+
+	current.Next = cn
+	cn.Previous = current
+	cn.Next = nextNode
+
+	if nextNode then nextNode.Previous = cn end
+end
+
+local function disconnect(self: PrivateConnection)
+	if not self.Connected then return end
+	self.Connected = false
+
+	local next = self.Next
+	local prev = self.Previous
+
+	if next then next.Previous = prev end
+	if prev then prev.Next = next end
+
+	local signal = self.Signal
+	if signal.Head == self then signal.Head = next end
+end
+
+local freeThreads: { thread } = {}
+
+local function runCallback(callback, thread, ...)
+	callback(...)
+	freeThreads[#freeThreads + 1] = thread
+end
+
+local function yielder()
+	while true do
+		runCallback(coroutine.yield())
+	end
+end
+
+local function processFireQueue<T...>(self: PrivateSignal<T...>)
+	if self.IsProcessing then return end
+	self.IsProcessing = true
+
+	while #self.FiringQueue > 0 do
+		local queue = self.FiringQueue
+		self.FiringQueue = {}
+
+		for i = 1, #queue do
+			local args = queue[i] :: { any }
+			local cn = self.Head
+
+			while cn do
+				if cn.Connected then
+					local thread
+					if #freeThreads > 0 then
+						thread = freeThreads[#freeThreads]
+						freeThreads[#freeThreads] = nil
+					else
+						thread = coroutine_create(yielder)
+						coroutine_resume(thread)
+					end
+
+					if not cn.VarArgs then
+						task_spawn(thread, cn.Callback, thread, table_unpack(args))
+					else
+						local callArgs = cn.VarArgs
+						local len = #callArgs
+						local count = len
+						for _, value in args do
+							count += 1
+							callArgs[count] = value
+						end
+
+						task_spawn(thread, cn.Callback, thread, table_unpack(callArgs))
+
+						for k = count, len + 1, -1 do
+							callArgs[k] = nil
+						end
+					end
+				end
+				cn = cn.Next
+			end
+		end
+
+		local processingQueue = self.ProcessingQueue
+		for i = 1, #processingQueue do
+			insertConnection(self, processingQueue[i])
+		end
+
+		table_clear(processingQueue)
+	end
+
+	self.IsProcessing = false
+end
+
+local function connect<T...>(self: PrivateSignal<T...>, priority: number, fn: (...any) -> (), ...: any): PrivateConnection
+	local varargs = { ... }
+	local cn = (
+		setmetatable({
+			Connected = true,
+			Priority = priority,
+			VarArgs = if #varargs == 0 then nil else varargs,
+			Signal = self,
+			Next = false,
+			Previous = false,
+			Callback = fn,
+		}, Connection) :: any
+	) :: PrivateConnection
+
+	if self.IsFiring then
+		self.ProcessingQueue[#self.ProcessingQueue + 1] = cn
+	else
+		insertConnection(self, cn)
+	end
+
+	return cn
+end
+
+function SignalStatic.new<T...>(): Signal<T...>
+	local self = setmetatable({
+		Head = false,
+		IsFiring = false,
+		IsProcessing = false,
+		FiringQueue = {},
+		ProcessingQueue = {},
+	}, Signal)
+
+	return (self :: any) :: Signal<T...>
+end
+
+function SignalStatic.IsConnection(obj: any): boolean
+	return (type(obj) == "table" and getmetatable(obj) == Connection)
+end
+
+function Signal.Connect<T...>(self: PrivateSignal<T...>, fn: (...any) -> (), ...: any): Connection
+	return connect(self, DEFAULT_PRIORITY, fn, ...)
+end
+
+Signal.ConnectPriority = connect
+
+function Signal.Once<T...>(self: PrivateSignal<T...>, fn: (...any) -> (), ...: any): Connection
+	local cn
+
+	cn = connect(self, DEFAULT_PRIORITY, function(...)
+		disconnect(cn)
+		fn(...)
+	end, ...)
+
+	return cn
+end
+
+function Signal.OncePriority<T...>(self: PrivateSignal<T...>, priority: number, fn: (...any) -> (), ...: any): Connection
+	local cn
+
+	cn = connect(self, priority, function(...)
+		disconnect(cn)
+		fn(...)
+	end, ...)
+
+	return cn
+end
+
+function Signal.Wait<T...>(self: PrivateSignal<T...>): ...any
+	local thread = coroutine_running()
+	local cn
+
+	cn = connect(self, DEFAULT_PRIORITY, function(...)
+		disconnect(cn)
+		if coroutine_status(thread) == "suspended" then task_spawn(thread, ...) end
+	end)
+
+	return coroutine_yield()
+end
+
+function Signal.WaitPriority<T...>(self: PrivateSignal<T...>, priority: number): ...any
+	local thread = coroutine_running()
+	local cn
+
+	cn = connect(self, priority, function(...)
+		disconnect(cn)
+		if coroutine_status(thread) == "suspended" then task_spawn(thread, ...) end
+	end)
+
+	return coroutine_yield()
+end
+
+function Signal.Fire<T...>(self: PrivateSignal<T...>, ...: any)
+	self.FiringQueue[#self.FiringQueue + 1] = { ... }
+	processFireQueue(self)
+end
+
+function Signal.DisconnectAll<T...>(self: PrivateSignal<T...>)
+	local cn = self.Head
+	while cn do
+		disconnect(cn)
+		cn = cn.Next
+	end
+end
+
+function Signal.Destroy<T...>(self: PrivateSignal<T...>)
+	self:DisconnectAll()
+	table_clear(self)
+	setmetatable(self, nil)
+end
+
+function Connection.Reconnect(self: PrivateConnection)
+	if self.Connected then return end
+	self.Connected = true
+
+	insertConnection(self.Signal, self)
+end
+
+Connection.Disconnect = disconnect
+
+return SignalStatic
