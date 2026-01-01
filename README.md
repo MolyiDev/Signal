@@ -5,7 +5,7 @@
 ### Pesde
 
 ```bash
-pesde add molyi/signal
+pesde add molyidev/signal
 ```
 
 ### Wally
