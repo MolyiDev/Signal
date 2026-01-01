@@ -85,7 +85,7 @@ return {
 
 		["Signal"] = function(Profiler, fn)
 			Profiler.Begin("New")
-			local sig = Signal.new() :: Signal.Signal<number, string, boolean>
+			local sig = Signal.new()
 			Profiler.End()
 
 			Profiler.Begin("Connect")

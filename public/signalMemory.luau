@@ -90,17 +90,17 @@ local function measure(name: string, newFunction: () -> Signal.Signal<...any>)
 	fireSig:Destroy()
 	print(`Fire: {formatMemory(fireAlloc)}`)
 
-	local fireSigVar = newFunction()
-	fireSigVar:Connect(function() end, "VAR ARGS", 1000, true, false)
+	local fireSigArgs = newFunction()
+	fireSigArgs:Connect(function() end, "BOUND ARGS", 1000, true, false)
 
-	local fireAllocVar = getEstimatedAllocation(function()
+	local fireAllocArgs = getEstimatedAllocation(function()
 		for _ = 1, ITERATIONS do
-			fireSigVar:Fire("Test", 123, true)
+			fireSigArgs:Fire("Test", 123, true)
 		end
 	end)
 
-	fireSigVar:Destroy()
-	print(`Fire var args: {formatMemory(fireAllocVar)}`)
+	fireSigArgs:Destroy()
+	print(`Fire Bound Args: {formatMemory(fireAllocArgs)}`)
 end
 
 local function measureFireSync(newFunction: () -> Signal.Signal<...any>)
@@ -116,17 +116,17 @@ local function measureFireSync(newFunction: () -> Signal.Signal<...any>)
 	fireSig:Destroy()
 	print(`FireSync: {formatMemory(fireAlloc)}`)
 
-	local fireSigVar = newFunction()
-	fireSigVar:Connect(function() end, "VAR ARGS", 1000, true, false)
+	local fireSigArgs = newFunction()
+	fireSigArgs:Connect(function() end, "BOUND ARGS", 1000, true, false)
 
-	local fireAllocVar = getEstimatedAllocation(function()
+	local fireAllocArgs = getEstimatedAllocation(function()
 		for _ = 1, ITERATIONS do
-			fireSigVar:FireSync("Test", 123, true)
+			fireSigArgs:FireSync("Test", 123, true)
 		end
 	end)
 
-	fireSigVar:Destroy()
-	print(`FireSync var args: {formatMemory(fireAllocVar)}`)
+	fireSigArgs:Destroy()
+	print(`FireSync Bound Args: {formatMemory(fireAllocArgs)}`)
 end
 
 -- The order of the benchmarks does not matter, the results are consistent.
@@ -174,76 +174,76 @@ There can be memory variations from 1-3KB but overall it's pretty accurate.
 new: 782 KB  
 Connect: 3.36 MB  
 Fire: 0 KB  
-Fire var args: 938 KB  
+Fire Bound Args: 938 KB  
 --- Signal ---  
 new: 782 KB  
 Connect: 2.9 MB  
 Fire: 0 KB  
-Fire var args: 0 KB  
+Fire Bound Args: 0 KB  
 FireSync: 0 KB  
-FireSync var args: 1 KB  
+FireSync Bound Args: 1 KB  
 --- Signal Priority ---  
 new: 782 KB  
 Connect: 2.9 MB  
 Fire: 0 KB  
-Fire var args: 0 KB  
+Fire Bound Args: 0 KB  
 FireSync: 0 KB  
-FireSync var args: 1 KB  
+FireSync Bound Args: 1 KB  
 --- FastSignal ---  
 new: 1.07 MB  
 Connect: 3.97 MB  
 Fire: 11.14 MB  
-Fire var args: 11.14 MB  
+Fire Bound Args: 11.14 MB  
 ---------------------------------------------------------------  
 --- Signal ---  
 new: 782 KB  
 Connect: 2.9 MB  
 Fire: 0 KB  
-Fire var args: 0 KB  
+Fire Bound Args: 0 KB  
 FireSync: 0 KB  
-FireSync var args: 0 KB  
+FireSync Bound Args: 0 KB  
 --- Signal Priority ---  
 new: 782 KB  
 Connect: 2.9 MB  
 Fire: 0 KB  
-Fire var args: 0 KB  
+Fire Bound Args: 0 KB  
 FireSync: 0 KB  
-FireSync var args: 0 KB  
+FireSync Bound Args: 0 KB  
 --- LemonSignal ---  
 new: 782 KB  
 Connect: 3.36 MB  
 Fire: 0 KB  
-Fire var args: 938 KB  
+Fire Bound Args: 938 KB  
 --- FastSignal ---  
 new: 1.07 MB  
 Connect: 3.97 MB  
 Fire: 11.14 MB  
-Fire var args: 11.14 MB  
+Fire Bound Args: 11.14 MB  
 ---------------------------------------------------------------  
 --- FastSignal ---  
 new: 1.07 MB  
 Connect: 3.97 MB  
 Fire: 11.14 MB  
-Fire var args: 11.14 MB  
+Fire Bound Args: 11.14 MB  
 --- LemonSignal ---  
 new: 782 KB  
 Connect: 3.36 MB  
 Fire: 0 KB  
-Fire var args: 938 KB  
+Fire Bound Args: 938 KB  
 --- Signal ---  
 new: 782 KB  
 Connect: 2.9 MB  
 Fire: 0 KB  
-Fire var args: 0 KB  
+Fire Bound Args: 0 KB  
 FireSync: 0 KB  
-FireSync var args: 0 KB  
+FireSync Bound Args: 0 KB  
 --- Signal Priority ---  
 new: 782 KB  
 Connect: 2.9 MB  
 Fire: 0 KB  
-Fire var args: 0 KB  
+Fire Bound Args: 0 KB  
 FireSync: 0 KB  
-FireSync var args: 0 KB  
+FireSync Bound Args: 0 KB  
 ---------------------------------------------------------------  
 ]]
 --
