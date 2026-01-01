@@ -1,10 +1,15 @@
 name = "molyi/signal"
 version = "1.0.0"
+description = "Signal library."
 authors = ["Molyi"]
+repository = "https://github.com/MolyiDev/Signal"
 license = "MIT"
+includes = ["pesde.toml", "README.md", "LICENSE", "src/**/*.luau"]
 
 [target]
 environment = "roblox"
+lib = "src/init.luau"
+build_files = ["src"]
 
 [indices]
 default = "https://github.com/pesde-pkg/index"

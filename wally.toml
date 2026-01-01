@@ -1,0 +1,13 @@
+[package]
+name = "molyidev/signal"
+version = "1.0.0"
+description = "Signal library."
+authors = ["Molyi"]
+registry = "https://github.com/UpliftGames/wally-index"
+repository = "https://github.com/MolyiDev/Signal"
+license = "MIT"
+realm = "shared"
+exclude = ["**"]
+include = ["wally.toml", "default.project.json", "README.md", "LICENSE", "src", "src/**"]
+
+[dependencies]

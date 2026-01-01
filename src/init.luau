@@ -9,19 +9,11 @@ export type Connection = {
 }
 
 type PrivateConnection = Connection & {
-	VarArgs: { any }?,
+	Priority: number,
+	BoundArgs: { any }?,
 	Signal: any,
 	Next: PrivateConnection?,
 	Previous: PrivateConnection?,
-	Callback: (...any) -> (),
-}
-
-type PrivatePriorityConnection = Connection & {
-	Priority: number,
-	VarArgs: { any }?,
-	Signal: any,
-	Next: PrivatePriorityConnection?,
-	Previous: PrivatePriorityConnection?,
 	Callback: (...any) -> (),
 }
 
@@ -41,19 +33,21 @@ export type PrioritySignal<T...> = Signal<T...> & {
 	WaitPriority: (self: PrioritySignal<T...>, priority: number) -> T...,
 }
 
-type PrivateSignal<T...> = Signal<T...> & {
+type PrivateSignal = {
 	Head: PrivateConnection?,
 }
 
-type PrivatePrioritySignal<T...> = PrioritySignal<T...> & {
-	Head: PrivatePriorityConnection?,
+export type SignalStatic = {
+	new: <T...>() -> Signal<T...>,
+	newPriority: <T...>() -> PrioritySignal<T...>,
+	IsSignal: (object: any) -> boolean,
+	IsConnection: (object: any) -> boolean,
 }
 
 -- Priority is in ascending order.
 -- Lower means first fired.
 local DEFAULT_PRIORITY = 0
 
-local table_clear = table.clear
 local table_unpack = table.unpack
 local coroutine_create = coroutine.create
 local coroutine_yield = coroutine.yield
@@ -62,9 +56,9 @@ local coroutine_status = coroutine.status
 local coroutine_running = coroutine.running
 local task_spawn = task.spawn
 
-local freeRunnerThread: thread | boolean = false
+local freeRunnerThread: thread?
 
-local function runCallback(callback, thread, ...)
+local function runCallback(callback, ...)
 	callback(...)
 	freeRunnerThread = coroutine_running()
 end
@@ -75,29 +69,15 @@ local function yielder()
 	end
 end
 
-local function disconnect(self: PrivateConnection)
-	if not self.Connected then return end
-	self.Connected = false
-
-	local next = self.Next
-	local prev = self.Previous
-
-	if next then next.Previous = prev end
-	if prev then prev.Next = next end
-
-	local signal = self.Signal
-	if signal.Head == self then signal.Head = next end
-end
-
-local function linkConnectionPriority<T...>(self: PrivatePrioritySignal<T...>, cn: PrivatePriorityConnection)
+local function linkConnectionPriority(self: PrivateSignal, connection: PrivateConnection)
 	local head = self.Head
-	local priority = cn.Priority
+	local priority = connection.Priority
 
 	if not head or priority <= head.Priority then
-		cn.Next = head
-		if head then head.Previous = cn end
-		self.Head = cn
-		cn.Previous = nil
+		connection.Next = head
+		if head then head.Previous = connection end
+		self.Head = connection
+		connection.Previous = nil
 		return
 	end
 
@@ -108,11 +88,116 @@ local function linkConnectionPriority<T...>(self: PrivatePrioritySignal<T...>, c
 
 	local nextNode = current.Next
 
-	current.Next = cn
-	cn.Previous = current
-	cn.Next = nextNode
+	current.Next = connection
+	connection.Previous = current
+	connection.Next = nextNode
 
-	if nextNode then nextNode.Previous = cn end
+	if nextNode then nextNode.Previous = connection end
+end
+
+local function fire(self: PrivateSignal, ...: any)
+	local connection = self.Head
+
+	while connection do
+		local thread = freeRunnerThread :: any
+		if thread then
+			freeRunnerThread = nil
+		else
+			thread = coroutine_create(yielder)
+			coroutine_resume(thread)
+		end
+
+		if not connection.BoundArgs then
+			task_spawn(thread, connection.Callback, ...)
+		else
+			local boundArgs = connection.BoundArgs
+			local len = #boundArgs
+			local count = len
+
+			local argCount = select("#", ...)
+			for i = 1, argCount do
+				count += 1
+				boundArgs[count] = select(i, ...)
+			end
+
+			task_spawn(thread, connection.Callback, table_unpack(boundArgs))
+
+			for j = count, len + 1, -1 do
+				boundArgs[j] = nil
+			end
+		end
+
+		connection = connection.Next
+	end
+end
+
+local function fireSync(self: PrivateSignal, ...: any)
+	local connection = self.Head
+
+	while connection do
+		local success, err
+
+		if not connection.BoundArgs then
+			success, err = pcall(connection.Callback, ...)
+		else
+			local boundArgs = connection.BoundArgs
+			local len = #boundArgs
+			local count = len
+
+			local argCount = select("#", ...)
+			for i = 1, argCount do
+				count += 1
+				boundArgs[count] = select(i, ...)
+			end
+
+			success, err = pcall(connection.Callback, table_unpack(boundArgs))
+
+			for j = count, len + 1, -1 do
+				boundArgs[j] = nil
+			end
+		end
+
+		if not success then task_spawn(error, tostring(err) :: any) end
+
+		connection = connection.Next
+	end
+end
+
+local function disconnect(self: PrivateConnection)
+	if not self.Connected then return end
+	self.Connected = false
+
+	local nextNode = self.Next
+	local prevNode = self.Previous
+	local signal = self.Signal
+
+	if nextNode then nextNode.Previous = prevNode end
+	if prevNode then
+		prevNode.Next = nextNode
+	elseif signal.Head == self then
+		signal.Head = nextNode
+	end
+end
+
+local function disconnectAll(self: PrivateSignal)
+	local connection = self.Head
+
+	while connection do
+		local nextConnection = connection.Next
+
+		connection.Connected = false
+		connection.Next = nil
+		connection.Previous = nil
+
+		connection = nextConnection
+	end
+
+	self.Head = nil
+end
+
+local function destroy(self: PrivateSignal)
+	disconnectAll(self)
+	setmetatable(self :: any, nil)
 end
 
 --==[ Connection ]==--
@@ -123,7 +208,7 @@ function Connection:__tostring()
 	return "Connection"
 end
 
-function Connection.Reconnect(self: PrivatePriorityConnection)
+function Connection.Reconnect(self: PrivateConnection)
 	if self.Connected then return end
 	self.Connected = true
 
@@ -134,7 +219,7 @@ function Connection.Reconnect(self: PrivatePriorityConnection)
 		self.Next = head
 		if head then head.Previous = self end
 		signal.Head = self
-		self.Previous = false :: any
+		self.Previous = nil
 
 		return
 	end
@@ -153,128 +238,56 @@ function Signal:__tostring()
 	return "Signal"
 end
 
-local function connectStandard<T...>(self: PrivateSignal<T...>, fn: (...any) -> (), ...: any): PrivateConnection
+local function connectStandard(self: PrivateSignal, fn: (...any) -> (), ...: any): PrivateConnection
 	local head = self.Head
-	local varargs = if select("#", ...) > 0 then { ... } else false
+	local boundArgs = if select("#", ...) > 0 then { ... } else nil
 
-	local cn = (
+	local connection = (
 		setmetatable({
 			Callback = fn,
 			Next = head,
 			Signal = self,
 			Connected = true,
-			VarArgs = varargs,
-			Previous = false,
+			BoundArgs = boundArgs,
+			Previous = nil,
 		}, Connection) :: any
 	) :: PrivateConnection
 
-	if head then head.Previous = cn end
-	self.Head = cn
+	if head then head.Previous = connection end
+	self.Head = connection
 
-	return cn
+	return connection
 end
 
 Signal.Connect = connectStandard
 
-function Signal.Once<T...>(self: PrivateSignal<T...>, fn: (...any) -> (), ...: any): Connection
-	local cn
+function Signal.Once(self: PrivateSignal, fn: (...any) -> (), ...: any): Connection
+	local connection: PrivateConnection
 
-	cn = connectStandard(self, function(...)
-		disconnect(cn)
+	connection = connectStandard(self, function(...)
+		disconnect(connection)
 		fn(...)
 	end, ...)
 
-	return cn
+	return connection
 end
 
-function Signal.Wait<T...>(self: PrivateSignal<T...>): ...any
+function Signal.Wait(self: PrivateSignal): ...any
 	local thread = coroutine_running()
-	local cn
+	local connection: PrivateConnection
 
-	cn = connectStandard(self, function(...)
-		disconnect(cn)
+	connection = connectStandard(self, function(...)
+		disconnect(connection)
 		if coroutine_status(thread) == "suspended" then task_spawn(thread, ...) end
 	end)
 
 	return coroutine_yield()
 end
 
-function Signal.Fire<T...>(self: PrivateSignal<T...>, ...: any)
-	local cn = self.Head
-
-	while cn do
-		local thread = freeRunnerThread :: any
-		if thread then
-			freeRunnerThread = false
-		else
-			thread = coroutine_create(yielder)
-			coroutine_resume(thread)
-		end
-
-		if not cn.VarArgs then
-			task_spawn(thread, cn.Callback, ...)
-		else
-			local callArgs = cn.VarArgs
-			local len = #callArgs
-			local count = len
-			for _, value in { ... } do
-				count += 1
-				callArgs[count] = value
-			end
-
-			task_spawn(thread, cn.Callback, table_unpack(callArgs))
-
-			for k = count, len + 1, -1 do
-				callArgs[k] = nil
-			end
-		end
-
-		cn = cn.Next
-	end
-end
-
-function Signal.FireSync<T...>(self: PrivateSignal<T...>, ...: any)
-	local cn = self.Head
-	while cn do
-		local success, err
-		if not cn.VarArgs then
-			success, err = pcall(cn.Callback, ...)
-		else
-			local callArgs = cn.VarArgs
-			local len = #callArgs
-			local count = len
-			for _, value in { ... } do
-				count += 1
-				callArgs[count] = value
-			end
-
-			success, err = pcall(cn.Callback, table_unpack(callArgs))
-
-			for k = count, len + 1, -1 do
-				callArgs[k] = nil
-			end
-		end
-
-		if not success then task_spawn(error, tostring(err)) end
-
-		cn = cn.Next
-	end
-end
-
-function Signal.DisconnectAll<T...>(self: PrivateSignal<T...>)
-	local cn = self.Head
-
-	while cn do
-		disconnect(cn)
-		cn = cn.Next
-	end
-end
-
-function Signal.Destroy<T...>(self: PrivateSignal<T...>)
-	self:DisconnectAll()
-	table_clear(self)
-	setmetatable(self, nil)
-end
+Signal.Fire = fire
+Signal.FireSync = fireSync
+Signal.DisconnectAll = disconnectAll
+Signal.Destroy = destroy
 
 --==[ PrioritySignal ]==--
 local PrioritySignal = {}
@@ -284,166 +297,92 @@ function PrioritySignal:__tostring()
 	return "PrioritySignal"
 end
 
-local function connectPriority<T...>(
-	self: PrivatePrioritySignal<T...>,
-	priority: number,
-	fn: (...any) -> (),
-	...: any
-): PrivatePriorityConnection
+local function connectPriority(self: PrivateSignal, priority: number, fn: (...any) -> (), ...: any): PrivateConnection
 	local varargs = if select("#", ...) > 0 then { ... } else nil
 
-	local cn = (
+	local connection = (
 		setmetatable({
 			Connected = true,
 			Priority = priority,
-			VarArgs = varargs,
+			BoundArgs = varargs,
 			Signal = self,
-			Next = false,
-			Previous = false,
+			Next = nil,
+			Previous = nil,
 			Callback = fn,
 		}, Connection) :: any
-	) :: PrivatePriorityConnection
+	) :: PrivateConnection
 
-	linkConnectionPriority(self, cn)
+	linkConnectionPriority(self, connection)
 
-	return cn
+	return connection
 end
 
-function PrioritySignal.Connect<T...>(self: PrivatePrioritySignal<T...>, fn: (...any) -> (), ...: any): Connection
+function PrioritySignal.Connect(self: PrivateSignal, fn: (...any) -> (), ...: any): Connection
 	return connectPriority(self, DEFAULT_PRIORITY, fn, ...)
 end
 
 PrioritySignal.ConnectPriority = connectPriority
 
-function PrioritySignal.Once<T...>(self: PrivatePrioritySignal<T...>, fn: (...any) -> (), ...: any): Connection
-	local cn
+function PrioritySignal.Once(self: PrivateSignal, fn: (...any) -> (), ...: any): Connection
+	local connection: PrivateConnection
 
-	cn = connectPriority(self, DEFAULT_PRIORITY, function(...)
-		disconnect(cn)
+	connection = connectPriority(self, DEFAULT_PRIORITY, function(...)
+		disconnect(connection)
 		fn(...)
 	end, ...)
 
-	return cn
+	return connection
 end
 
-function PrioritySignal.OncePriority<T...>(
-	self: PrivatePrioritySignal<T...>,
-	priority: number,
-	fn: (...any) -> (),
-	...: any
-): Connection
-	local cn
+function PrioritySignal.OncePriority(self: PrivateSignal, priority: number, fn: (...any) -> (), ...: any): Connection
+	local connection: PrivateConnection
 
-	cn = connectPriority(self, priority, function(...)
-		disconnect(cn)
+	connection = connectPriority(self, priority, function(...)
+		disconnect(connection)
 		fn(...)
 	end, ...)
 
-	return cn
+	return connection
 end
 
-function PrioritySignal.Wait<T...>(self: PrivatePrioritySignal<T...>): ...any
+function PrioritySignal.Wait(self: PrivateSignal): ...any
 	local thread = coroutine_running()
-	local cn
+	local connection: PrivateConnection
 
-	cn = connectPriority(self, DEFAULT_PRIORITY, function(...)
-		disconnect(cn)
+	connection = connectPriority(self, DEFAULT_PRIORITY, function(...)
+		disconnect(connection)
 		if coroutine_status(thread) == "suspended" then task_spawn(thread, ...) end
 	end)
 
 	return coroutine_yield()
 end
 
-function PrioritySignal.WaitPriority<T...>(self: PrivatePrioritySignal<T...>, priority: number): ...any
+function PrioritySignal.WaitPriority(self: PrivateSignal, priority: number): ...any
 	local thread = coroutine_running()
-	local cn
+	local connection: PrivateConnection
 
-	cn = connectPriority(self, priority, function(...)
-		disconnect(cn)
+	connection = connectPriority(self, priority, function(...)
+		disconnect(connection)
 		if coroutine_status(thread) == "suspended" then task_spawn(thread, ...) end
 	end)
 
 	return coroutine_yield()
 end
 
-function PrioritySignal.Fire<T...>(self: PrivatePrioritySignal<T...>, ...: any)
-	local cn = self.Head
-
-	while cn do
-		local thread = freeRunnerThread :: any
-		if thread then
-			freeRunnerThread = false
-		else
-			thread = coroutine_create(yielder)
-			coroutine_resume(thread)
-		end
-
-		if not cn.VarArgs then
-			task_spawn(thread, cn.Callback, ...)
-		else
-			local callArgs = cn.VarArgs
-			local len = #callArgs
-			local count = len
-			for _, value in { ... } do
-				count += 1
-				callArgs[count] = value
-			end
-
-			task_spawn(thread, cn.Callback, table_unpack(callArgs))
-
-			for k = count, len + 1, -1 do
-				callArgs[k] = nil
-			end
-		end
-
-		cn = cn.Next
-	end
-end
-
-function PrioritySignal.FireSync<T...>(self: PrivatePrioritySignal<T...>, ...: any)
-	local cn = self.Head
-	while cn do
-		local success, err
-		if not cn.VarArgs then
-			success, err = pcall(cn.Callback, ...)
-		else
-			local callArgs = cn.VarArgs
-			local len = #callArgs
-			local count = len
-			for _, value in { ... } do
-				count += 1
-				callArgs[count] = value
-			end
-
-			success, err = pcall(cn.Callback, table_unpack(callArgs))
-
-			for k = count, len + 1, -1 do
-				callArgs[k] = nil
-			end
-		end
-
-		if not success then task_spawn(error, tostring(err)) end
-
-		cn = cn.Next
-	end
-end
-
-PrioritySignal.DisconnectAll = Signal.DisconnectAll
-PrioritySignal.Destroy = Signal.Destroy
+PrioritySignal.Fire = fire
+PrioritySignal.FireSync = fireSync
+PrioritySignal.DisconnectAll = disconnectAll
+PrioritySignal.Destroy = destroy
 
 --==[ SignalStatic ]==--
 local SignalStatic = {}
 
 function SignalStatic.new<T...>(): Signal<T...>
-	local self = setmetatable({ Head = false }, Signal)
-
-	return (self :: any) :: Signal<T...>
+	return (setmetatable({ Head = nil }, Signal) :: any) :: Signal<T...>
 end
 
 function SignalStatic.newPriority<T...>(): PrioritySignal<T...>
-	local self = setmetatable({ Head = false }, PrioritySignal)
-
-	return (self :: any) :: PrioritySignal<T...>
+	return (setmetatable({ Head = nil }, PrioritySignal) :: any) :: PrioritySignal<T...>
 end
 
 function SignalStatic.IsConnection(obj: any): boolean
@@ -457,4 +396,4 @@ function SignalStatic.IsSignal(obj: any): boolean
 	return false
 end
 
-return SignalStatic
+return SignalStatic :: SignalStatic
