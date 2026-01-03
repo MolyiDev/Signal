@@ -1,6 +1,6 @@
 [package]
 name = "molyidev/signal"
-version = "1.0.1"
+version = "1.0.2"
 description = "Signal library."
 authors = ["Molyi"]
 registry = "https://github.com/UpliftGames/wally-index"

@@ -11,7 +11,7 @@ pesde add molyidev/signal
 ### Wally
 
 ```toml
-Signal = "molyidev/signal@^1.0.1"
+Signal = "molyidev/signal@^1.0.2"
 ```
 
 ## Why use Signal?
